@@ -93,6 +93,7 @@ async function startServer() {
   });
 
   app.get('/api/news', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
       const allArticles = await fetchAllNews();
       const feedId = req.query.feed as string;
