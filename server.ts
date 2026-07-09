@@ -10,25 +10,29 @@ const rssParser = new Parser({
   customFields: {
     item: ['media:content', 'enclosure', 'content:encoded', 'description'],
   },
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  }
 });
 
 // Using Gemini for AI Summaries (Threat Briefing)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const FEEDS = [
-  // Ameaças, Vulnerabilidades e Ransomware
+  // Ameaças, Vulnerabilidades e Ransomware (Global)
   { id: 'hn', name: 'The Hacker News', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
   { id: 'bc', name: 'Bleeping Computer', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
   { id: 'gnews-vuln', name: 'Google News - Vulnerabilities', url: 'https://news.google.com/rss/search?q=%22vulnerability%22+OR+%22zero-day%22+OR+%22ransomware%22+cybersecurity+when:7d&hl=en-US&gl=US&ceid=US:en', region: 'Global', category: 'Ameaças' },
 
   // Regulamentação / Compliance (NIS2, DORA, ISO 27001) - Europa e Global
+  { id: 'dr', name: 'Dark Reading - Risk', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Regulamentação' },
+  { id: 'sec-week', name: 'SecurityWeek', url: 'https://feeds.feedburner.com/securityweek', region: 'Europa', category: 'Ameaças' },
   { id: 'gnews-nis2-dora', name: 'Google News - NIS2 & DORA', url: 'https://news.google.com/rss/search?q=%22NIS2%22+OR+%22DORA%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Regulamentação' },
-  { id: 'gnews-iso27001', name: 'Google News - ISO 27001', url: 'https://news.google.com/rss/search?q=%22ISO+27001%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Global', category: 'Regulamentação' },
   
   // Portugal / CNCS / Regulamentação PT
+  { id: 'sapo-tek', name: 'SAPO Tek - Cibersegurança', url: 'https://tek.sapo.pt/rss', region: 'Portugal', category: 'Ameaças' },
   { id: 'gnews-pt-reg', name: 'Google News - Compliance PT', url: 'https://news.google.com/rss/search?q=(%22NIS2%22+OR+%22DORA%22+OR+%22ISO+27001%22)+ciberseguran%C3%A7a+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Regulamentação' },
   { id: 'gnews-cncs', name: 'Google News - CNCS', url: 'https://news.google.com/rss/search?q=%22Centro+Nacional+de+Ciberseguran%C3%A7a%22+OR+%22CNCS%22+portugal+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'CNCS' },
-  { id: 'gnews-pt-threats', name: 'Google News - Ameaças PT', url: 'https://news.google.com/rss/search?q=(ataque+OR+ransomware+OR+vulnerabilidade)+ciberseguran%C3%A7a+portugal+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Ameaças' },
 ];
 
 let newsCache: { timestamp: number, data: any[] } | null = null;
