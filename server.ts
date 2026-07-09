@@ -3,6 +3,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import Parser from 'rss-parser';
 import { GoogleGenAI } from '@google/genai';
+import rateLimit from 'express-rate-limit';
 
 const PORT = 3000;
 const rssParser = new Parser({
@@ -30,10 +31,59 @@ const FEEDS = [
   { id: 'gnews-pt-threats', name: 'Google News - Ameaças PT', url: 'https://news.google.com/rss/search?q=(ataque+OR+ransomware+OR+vulnerabilidade)+ciberseguran%C3%A7a+portugal+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Ameaças' },
 ];
 
+let newsCache: { timestamp: number, data: any[] } | null = null;
+const NEWS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
+let briefingCache: { timestamp: number, summary: string } | null = null;
+const BRIEFING_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+async function fetchAllNews() {
+  if (newsCache && (Date.now() - newsCache.timestamp < NEWS_CACHE_TTL)) {
+    return newsCache.data;
+  }
+  
+  let allArticles: any[] = [];
+  await Promise.all(FEEDS.map(async (feed) => {
+    try {
+      const parsed = await rssParser.parseURL(feed.url);
+      const articles = parsed.items.map(item => ({
+        id: item.guid || item.link || Math.random().toString(),
+        title: item.title,
+        link: item.link,
+        pubDate: item.pubDate,
+        source: feed.name,
+        region: feed.region,
+        category: feed.category,
+        snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
+      }));
+      allArticles = allArticles.concat(articles);
+    } catch (e) {
+      console.error(`Error fetching feed ${feed.name}:`, e);
+    }
+  }));
+
+  // Sort by date descending
+  allArticles.sort((a, b) => {
+    return new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime();
+  });
+  
+  const top100 = allArticles.slice(0, 100);
+  newsCache = { timestamp: Date.now(), data: top100 };
+  return top100;
+}
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per `window`
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 async function startServer() {
   const app = express();
   
   app.use(express.json());
+  app.use('/api/', apiLimiter);
 
   app.get('/api/feeds', (req, res) => {
     res.json(FEEDS);
@@ -41,36 +91,13 @@ async function startServer() {
 
   app.get('/api/news', async (req, res) => {
     try {
+      const allArticles = await fetchAllNews();
       const feedId = req.query.feed as string;
-      const feedsToFetch = feedId ? FEEDS.filter(f => f.id === feedId) : FEEDS;
-      
-      let allArticles: any[] = [];
-      
-      await Promise.all(feedsToFetch.map(async (feed) => {
-        try {
-          const parsed = await rssParser.parseURL(feed.url);
-          const articles = parsed.items.map(item => ({
-            id: item.guid || item.link || Math.random().toString(),
-            title: item.title,
-            link: item.link,
-            pubDate: item.pubDate,
-            source: feed.name,
-            region: feed.region,
-            category: feed.category,
-            snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
-          }));
-          allArticles = allArticles.concat(articles);
-        } catch (e) {
-          console.error(`Error fetching feed ${feed.name}:`, e);
-        }
-      }));
-
-      // Sort by date descending
-      allArticles.sort((a, b) => {
-        return new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime();
-      });
-
-      res.json(allArticles.slice(0, 100)); // Return top 100
+      if (feedId) {
+        res.json(allArticles.filter(a => a.source === FEEDS.find(f => f.id === feedId)?.name));
+      } else {
+        res.json(allArticles);
+      }
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: 'Failed to fetch news' });
@@ -79,7 +106,12 @@ async function startServer() {
   
   app.post('/api/briefing', async (req, res) => {
     try {
-      const { articles } = req.body;
+      if (briefingCache && (Date.now() - briefingCache.timestamp < BRIEFING_CACHE_TTL)) {
+        return res.json({ summary: briefingCache.summary });
+      }
+
+      const articles = await fetchAllNews();
+      
       if (!articles || articles.length === 0) {
         return res.json({ summary: "No articles provided for briefing." });
       }
@@ -113,7 +145,12 @@ async function startServer() {
         contents: promptText,
       });
 
-      res.json({ summary: response.text });
+      const summary = response.text;
+      if (summary) {
+        briefingCache = { timestamp: Date.now(), summary };
+      }
+
+      res.json({ summary });
     } catch (err) {
       console.error('Error generating briefing:', err);
       res.status(500).json({ error: 'Failed to generate briefing' });

@@ -32,7 +32,7 @@ export default function App() {
   const euArticles = filteredArticles.filter(a => a.region === 'Europa' || a.region === 'Europe' || a.region === 'Global/EU').slice(0, 5);
   const globalArticles = filteredArticles.filter(a => a.region === 'Global').slice(0, 5);
 
-  const availableTags = ['Todas', 'Ameaças', 'Regulamentação', 'CNCS', 'Geral'];
+  const availableTags = ['Todas', 'Ameaças', 'Regulamentação', 'CNCS'];
 
   return (
     <>
