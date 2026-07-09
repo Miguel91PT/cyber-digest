@@ -15,18 +15,19 @@ const rssParser = new Parser({
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const FEEDS = [
-  // Geral/Ameaças
+  // Ameaças, Vulnerabilidades e Ransomware
   { id: 'hn', name: 'The Hacker News', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
   { id: 'bc', name: 'Bleeping Computer', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
-  { id: 'dr', name: 'Dark Reading', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Geral' },
+  { id: 'gnews-vuln', name: 'Google News - Vulnerabilities', url: 'https://news.google.com/rss/search?q=%22vulnerability%22+OR+%22zero-day%22+OR+%22ransomware%22+cybersecurity+when:7d&hl=en-US&gl=US&ceid=US:en', region: 'Global', category: 'Ameaças' },
+
+  // Regulamentação / Compliance (NIS2, DORA, ISO 27001) - Europa e Global
+  { id: 'gnews-nis2-dora', name: 'Google News - NIS2 & DORA', url: 'https://news.google.com/rss/search?q=%22NIS2%22+OR+%22DORA%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Regulamentação' },
+  { id: 'gnews-iso27001', name: 'Google News - ISO 27001', url: 'https://news.google.com/rss/search?q=%22ISO+27001%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Global', category: 'Regulamentação' },
   
-  // Portugal / CNCS
-  { id: 'gnews-pt', name: 'Google News - Cibersegurança PT', url: 'https://news.google.com/rss/search?q=ciberseguran%C3%A7a+portugal+when:7d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Geral' },
-  { id: 'gnews-cncs', name: 'Google News - CNCS', url: 'https://news.google.com/rss/search?q=%22Centro+Nacional+de+Ciberseguran%C3%A7a%22+OR+%22CNCS%22+portugal+when:7d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'CNCS' },
-  
-  // Regulamentação / Europa
-  { id: 'gnews-eu', name: 'Google News - EU Cybersecurity', url: 'https://news.google.com/rss/search?q=cybersecurity+europe+when:7d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Regulamentação' },
-  { id: 'gnews-nis2', name: 'Google News - NIS2 & DORA', url: 'https://news.google.com/rss/search?q=%22NIS2%22+OR+%22DORA%22+OR+%22regulamenta%C3%A7%C3%A3o%22+ciberseguran%C3%A7a+when:7d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Europa', category: 'Regulamentação' }
+  // Portugal / CNCS / Regulamentação PT
+  { id: 'gnews-pt-reg', name: 'Google News - Compliance PT', url: 'https://news.google.com/rss/search?q=(%22NIS2%22+OR+%22DORA%22+OR+%22ISO+27001%22)+ciberseguran%C3%A7a+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Regulamentação' },
+  { id: 'gnews-cncs', name: 'Google News - CNCS', url: 'https://news.google.com/rss/search?q=%22Centro+Nacional+de+Ciberseguran%C3%A7a%22+OR+%22CNCS%22+portugal+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'CNCS' },
+  { id: 'gnews-pt-threats', name: 'Google News - Ameaças PT', url: 'https://news.google.com/rss/search?q=(ataque+OR+ransomware+OR+vulnerabilidade)+ciberseguran%C3%A7a+portugal+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Ameaças' },
 ];
 
 async function startServer() {
@@ -86,15 +87,20 @@ async function startServer() {
       const promptText = `
         You are a senior cybersecurity analyst. Review the following recent news headlines and short snippets.
         Provide a concise, professional threat briefing summarizing the most critical news of the last week.
+        Your primary audience are Enterprise CISOs and IT Directors. You MUST prioritize news regarding:
+        - Major Vulnerabilities (Zero-days) and active Ransomware threats.
+        - Regulatory Compliance, specifically NIS2, DORA, and ISO 27001 updates or impacts.
+        - Strategic threats to European and Portuguese enterprises.
+
         Structure your response in exactly three short sections (use Markdown headings):
         ### Portugal
-        (Focus on national threats, CNCS directives, and local context)
+        (Focus on national threats, CNCS directives, local compliance impacts, and local enterprise context)
         
         ### União Europeia
         (Focus on EU regulations like NIS2/DORA, ENISA updates, and EU-wide threats)
         
         ### Mundo
-        (Focus on the global landscape, major vulnerabilities, and ransomware trends)
+        (Focus on the global landscape, major vulnerabilities, zero-days, and ransomware trends)
 
         CRITICAL INSTRUCTION: Your entire response MUST be written in strict European Portuguese (PT-PT), using formal and professional terminology suitable for a Portuguese cybersecurity professional. Do not use Brazilian Portuguese phrasing (e.g. use "utilizador" instead of "usuário", "ecrã" instead of "tela", "registo" instead of "registro").
         
