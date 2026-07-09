@@ -11,7 +11,7 @@ export default function App() {
   const fetchNews = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/news');
+      const res = await fetch('/api/news', { cache: 'no-cache' });
       if (!res.ok) throw new Error('Failed to fetch');
       const data = await res.json();
       setArticles(data);

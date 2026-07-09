@@ -32,6 +32,8 @@ const FEEDS = [
   { id: 'gnews-pt-reg', name: 'Google News - Compliance PT', url: 'https://news.google.com/rss/search?q=(%22NIS2%22+OR+%22DORA%22+OR+%22RGPD%22+OR+%22Regime+Jur%C3%ADdico+da+Ciberseguran%C3%A7a%22)+AND+(%22Portugal%22+OR+%22portuguesas%22+OR+%22CNCS%22)+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Regulamentação' },
   { id: 'gnews-cncs', name: 'Google News - CNCS', url: 'https://news.google.com/rss/search?q=(%22Centro+Nacional+de+Ciberseguran%C3%A7a%22+OR+%22CNCS%22)+AND+(%22Portugal%22+OR+%22ciberseguran%C3%A7a%22)+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'CNCS' },
   { id: 'gnews-pt-threats', name: 'Google News - Ameaças PT', url: 'https://news.google.com/rss/search?q=(%22ciberataque%22+OR+%22ransomware%22+OR+%22hacker%22+OR+%22ciberseguran%C3%A7a%22)+AND+(%22Portugal%22+OR+%22portuguesas%22+OR+%22CNCS%22)+when:14d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Ameaças' },
+  { id: 'sapo-tek-ciber', name: 'SAPO Tek - Cibersegurança', url: 'https://tek.sapo.pt/tag/ciberseguranca/rss', region: 'Portugal', category: 'Ameaças' },
+  { id: 'security-mag-pt', name: 'Security Magazine PT', url: 'https://www.securitymagazine.pt/feed/', region: 'Portugal', category: 'Ameaças' },
 ];
 
 let newsCache: { timestamp: number, data: any[] } | null = null;
@@ -40,13 +42,18 @@ const NEWS_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 let briefingCache: { timestamp: number, summary: string } | null = null;
 const BRIEFING_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
+// Helper for sequential fetch with delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function fetchAllNews() {
   if (newsCache && (Date.now() - newsCache.timestamp < NEWS_CACHE_TTL)) {
     return newsCache.data;
   }
   
   let allArticles: any[] = [];
-  await Promise.all(FEEDS.map(async (feed) => {
+  
+  // Fetch sequentially to avoid Google News rate limits (HTTP 429)
+  for (const feed of FEEDS) {
     try {
       const parsed = await rssParser.parseURL(feed.url);
       const articles = parsed.items.map(item => ({
@@ -63,7 +70,8 @@ async function fetchAllNews() {
     } catch (e) {
       console.error(`Error fetching feed ${feed.name}:`, e);
     }
-  }));
+    await delay(1000); // 1s delay between fetches
+  }
 
   // Sort by date descending
   allArticles.sort((a, b) => {
@@ -93,7 +101,7 @@ async function startServer() {
   });
 
   app.get('/api/news', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cache-Control', 'public, max-age=300');
     try {
       const allArticles = await fetchAllNews();
       const feedId = req.query.feed as string;
