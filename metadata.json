@@ -1,0 +1,6 @@
+{
+  "name": "Cyber Digest PT",
+  "description": "A cybersecurity news digest focused on European and Portuguese news.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
