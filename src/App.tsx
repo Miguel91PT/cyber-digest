@@ -6,6 +6,7 @@ import type { Article } from './types';
 export default function App() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedTag, setSelectedTag] = useState<string>('Todas');
   
   const fetchNews = async () => {
     setLoading(true);
@@ -25,9 +26,13 @@ export default function App() {
     fetchNews();
   }, []);
 
-  const ptArticles = articles.filter(a => a.region === 'Portugal').slice(0, 5);
-  const euArticles = articles.filter(a => a.region === 'Europa' || a.region === 'Europe' || a.region === 'Global/EU').slice(0, 5);
-  const globalArticles = articles.filter(a => a.region === 'Global').slice(0, 5);
+  const filteredArticles = articles.filter(a => selectedTag === 'Todas' || (a.category || 'Geral') === selectedTag);
+  
+  const ptArticles = filteredArticles.filter(a => a.region === 'Portugal').slice(0, 5);
+  const euArticles = filteredArticles.filter(a => a.region === 'Europa' || a.region === 'Europe' || a.region === 'Global/EU').slice(0, 5);
+  const globalArticles = filteredArticles.filter(a => a.region === 'Global').slice(0, 5);
+
+  const availableTags = ['Todas', 'Ameaças', 'Regulamentação', 'CNCS', 'Geral'];
 
   return (
     <>
@@ -58,13 +63,49 @@ export default function App() {
       </header>
 
       <main>
-        <ThreatBriefing articles={articles} />
+        <ThreatBriefing articles={filteredArticles} />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--muted)', fontFamily: '"IBM Plex Mono", monospace' }}>
+            Filtrar por Tag:
+          </span>
+          {availableTags.map(tag => {
+             let tagClass = '';
+             if (tag === 'Ameaças') tagClass = 'critical';
+             if (tag === 'Regulamentação' || tag === 'CNCS') tagClass = 'warn';
+             
+             return (
+              <button
+                key={tag}
+                onClick={() => setSelectedTag(tag)}
+                className={`tag ${tagClass}`}
+                style={{ 
+                  cursor: 'pointer', 
+                  opacity: selectedTag === tag ? 1 : 0.4,
+                  border: selectedTag === tag ? '1px solid var(--azulejo)' : '1px solid var(--line)',
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                {tag}
+              </button>
+            );
+          })}
+        </div>
 
         <section className="region pt" id="pt">
           <div className="region-head">
             <h2>Portugal</h2>
             <span className="region-flag pt">PT</span>
-            <button className="refresh-btn" style={{ marginLeft: 'auto' }} onClick={fetchNews} disabled={loading}>
+            <a 
+              href="https://www.cncs.gov.pt/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="refresh-btn" 
+              style={{ marginLeft: 'auto', textDecoration: 'none', color: 'var(--azulejo)', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              Portal CNCS ↗
+            </a>
+            <button className="refresh-btn" style={{ marginLeft: '8px' }} onClick={fetchNews} disabled={loading}>
               {loading ? 'A sintonizar...' : '↻ Atualizar'}
             </button>
           </div>
