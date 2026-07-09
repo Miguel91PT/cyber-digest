@@ -134,7 +134,8 @@ async function startServer() {
         ### Mundo
         (Focus on the global landscape, major vulnerabilities, zero-days, and ransomware trends)
 
-        CRITICAL INSTRUCTION: Your entire response MUST be written in strict European Portuguese (PT-PT), using formal and professional terminology suitable for a Portuguese cybersecurity professional. Do not use Brazilian Portuguese phrasing (e.g. use "utilizador" instead of "usuário", "ecrã" instead of "tela", "registo" instead of "registro").
+        CRITICAL INSTRUCTION: Your entire response MUST be written in strict European Portuguese (PT-PT). Do not use Brazilian Portuguese phrasing.
+        DO NOT include any introductory greetings, preambles, or opening paragraphs (e.g., do not say "Prezados CISOs..."). Start your response DIRECTLY with the first Markdown heading "### Portugal".
         
         Articles:
         ${articles.slice(0, 40).map((a: any) => `- [${a.region}] ${a.title} (${a.source}): ${a.snippet}`).join('\n')}
