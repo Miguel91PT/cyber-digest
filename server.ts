@@ -20,7 +20,12 @@ const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 // relevantes para a região/tema em causa. Feeds do tipo 'gnews' não precisam disto —
 // a query já faz a filtragem do lado do servidor da GNews.
 const EU_FILTER = /NIS2|DORA|ENISA|European Union|European Commission|Cyber Resilience Act|European Parliament|Europol/i;
-const PT_COMPLIANCE_FILTER = /NIS2|DORA|ISO\s?27001|CNCS|regulamento|regime jur[ií]dico|conformidade|obrigatoriedade|Centro Nacional de Ciberseguran[cç]a/i;
+// Nota: só termos que são, por si só, quase exclusivamente sobre compliance de cibersegurança.
+// Removidos "regulamento", "regime jurídico", "conformidade", "obrigatoriedade" — são
+// vocabulário jurídico/administrativo genérico (aplica-se a qualquer lei, não só cibersegurança),
+// e a Pplware, sendo um blog de tecnologia generalista, cobre imensa regulação não relacionada
+// (TVDE, telecomunicações, etc.) onde esses termos aparecem sem qualquer ligação a cibersegurança.
+const PT_COMPLIANCE_FILTER = /NIS2|DORA|ISO\s?27001|CNCS|Centro Nacional de Ciberseguran[cç]a/i;
 
 type FeedConfig =
   | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'rss'; url: string }
