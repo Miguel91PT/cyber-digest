@@ -19,7 +19,11 @@ const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 // Regex de filtragem: aplicados a feeds genéricos (RSS) para extrair apenas os itens
 // relevantes para a região/tema em causa. Feeds do tipo 'gnews' não precisam disto —
 // a query já faz a filtragem do lado do servidor da GNews.
-const EU_FILTER = /NIS2|DORA|ENISA|European Union|European Commission|Cyber Resilience Act|European Parliament|Europol/i;
+// Nota: inclui "\bEU\b" e "European" soltos — headlines reais raramente escrevem
+// "European Union" por extenso; escrevem "EU" ou só "European". Confirmado ao inspecionar
+// o feed real do Dark Reading: artigos genuinamente sobre a UE ("European Organizations...",
+// "...at EU, Asia Hospitality Orgs") não batiam com a versão anterior, mais restrita.
+const EU_FILTER = /\bNIS2\b|\bDORA\b|\bENISA\b|\bEU\b|European|Cyber Resilience Act|Europol/i;
 // Nota: só termos que são, por si só, quase exclusivamente sobre compliance de cibersegurança.
 // Removidos "regulamento", "regime jurídico", "conformidade", "obrigatoriedade" — são
 // vocabulário jurídico/administrativo genérico (aplica-se a qualquer lei, não só cibersegurança),
@@ -37,16 +41,21 @@ const FEEDS: FeedConfig[] = [
   { id: 'bc', name: 'Bleeping Computer', type: 'rss', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
 
   // União Europeia — feeds nativos e genéricos, filtrados por palavras-chave para reter
-  // só o que é efetivamente relevante para a UE (NIS2, DORA, ENISA, instituições europeias).
+  // só o que é efetivamente relevante para a UE (NIS2, DORA, ENISA, instituições europeias),
+  // mais uma pesquisa dedicada via GNews (mesmo mecanismo que já funciona para Portugal).
   { id: 'sw-eu', name: 'SecurityWeek (filtrado UE)', type: 'rss', url: 'https://www.securityweek.com/feed', region: 'Europa', category: 'Regulamentação', filterKeywords: EU_FILTER },
   { id: 'dr-eu', name: 'Dark Reading (filtrado UE)', type: 'rss', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Ameaças', filterKeywords: EU_FILTER },
   { id: 'krebs-eu', name: 'Krebs on Security (filtrado UE)', type: 'rss', url: 'https://krebsonsecurity.com/feed/', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
+  { id: 'gnews-eu-compliance', name: 'GNews - Compliance UE', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR ENISA OR "Cyber Resilience Act"', gnewsLang: 'en', region: 'Europa', category: 'Regulamentação' },
 
   // Portugal — Pplware fica como rede de segurança gratuita (RSS nativo, sem custo de quota),
   // e agora junta-se a fonte "a sério": pesquisa dedicada via GNews (API própria para isto,
   // ao contrário do Google News que bloqueia pedidos automáticos do Render).
   { id: 'pplware-pt', name: 'Pplware (filtrado compliance)', type: 'rss', url: 'https://pplware.sapo.pt/feed/', region: 'Portugal', category: 'Regulamentação', filterKeywords: PT_COMPLIANCE_FILTER },
-  { id: 'gnews-pt-compliance', name: 'GNews - Compliance PT', type: 'gnews', gnewsQuery: '(NIS2 OR DORA OR "ISO 27001") AND (Portugal OR portuguesa OR empresas)', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Regulamentação' },
+  // Query alargada: a exigência de "Portugal/portuguesa/empresas" no próprio texto era
+  // redundante com lang=pt+country=pt (que já restringe à esfera portuguesa) e reduzia
+  // demasiado os resultados — só 1 artigo no primeiro teste real.
+  { id: 'gnews-pt-compliance', name: 'GNews - Compliance PT', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR "ISO 27001" OR CNCS', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Regulamentação' },
 ];
 
 async function startServer() {
@@ -131,9 +140,11 @@ async function startServer() {
   // e de um contador diário como rede de segurança final. Isto importa especialmente se
   // a app passar a ter mais do que um visitante ocasional: o cache geral de 10 min, por si
   // só, poderia gerar até 144 fetches/dia com tráfego constante — acima do limite da GNews.
-  let gnewsCache: { data: { title?: string; link?: string; pubDate?: string; description?: string }[]; timestamp: number } | null = null;
-  const GNEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora — no máximo 24 pedidos/dia, bem abaixo do limite de 100
-  const GNEWS_DAILY_SAFETY_CAP = 90; // pára antes do limite real, como margem de segurança
+  // Map (não uma única cache) porque agora há duas queries GNews (PT e UE) — com uma única
+  // cache partilhada, a segunda substituiria sempre o resultado da primeira.
+  const gnewsCache = new Map<string, { data: { title?: string; link?: string; pubDate?: string; description?: string }[]; timestamp: number }>();
+  const GNEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora por feed — no máximo ~24 pedidos/dia por query, bem abaixo do limite de 100
+  const GNEWS_DAILY_SAFETY_CAP = 90; // pára antes do limite real, como margem de segurança (partilhado por todas as queries GNews)
   let gnewsCallsToday = 0;
   let gnewsQuotaDay = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD' em UTC
 
@@ -160,11 +171,12 @@ async function startServer() {
           return [];
         }
         const now = Date.now();
-        if (gnewsCache && (now - gnewsCache.timestamp) < GNEWS_CACHE_TTL_MS) {
-          rawItems = gnewsCache.data;
+        const cached = gnewsCache.get(feed.id);
+        if (cached && (now - cached.timestamp) < GNEWS_CACHE_TTL_MS) {
+          rawItems = cached.data;
         } else if (!canCallGnewsToday()) {
-          console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível em vez de arriscar a quota.`);
-          rawItems = gnewsCache ? gnewsCache.data : [];
+          console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível para ${feed.name} em vez de arriscar a quota.`);
+          rawItems = cached ? cached.data : [];
         } else {
           const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
           if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
@@ -176,7 +188,7 @@ async function startServer() {
           }
           const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
           rawItems = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
-          gnewsCache = { data: rawItems, timestamp: now };
+          gnewsCache.set(feed.id, { data: rawItems, timestamp: now });
         }
       } else {
         const parsed = await rssParser.parseURL(feed.url);
