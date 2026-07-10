@@ -71,7 +71,11 @@ async function startServer() {
   // (sucesso + nº de itens, ou o erro exato). Existe para não precisarmos de adivinhar
   // com base nos logs do Render — visita /api/debug/feeds e vê logo o que está a falhar.
   app.get('/api/debug/feeds', async (req, res) => {
-    const results = await Promise.all(FEEDS.map(async (feed) => {
+    // Sequencial de propósito — Promise.all disparava todos os feeds ao mesmo tempo,
+    // incluindo as duas queries GNews em simultâneo, o que já provocou um 429 real
+    // ("too many requests in a short period of time") mesmo com quota diária de sobra.
+    const results = [];
+    for (const feed of FEEDS) {
       const start = Date.now();
       try {
         let rawItems: { title?: string; description?: string }[];
@@ -96,7 +100,7 @@ async function startServer() {
           ? rawItems.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.description || ''}`))
           : rawItems;
 
-        return {
+        results.push({
           id: feed.id,
           name: feed.name,
           region: feed.region,
@@ -107,9 +111,9 @@ async function startServer() {
           matchedItemCount: matched.length,
           firstTitle: matched[0]?.title || rawItems[0]?.title || null,
           ms: Date.now() - start,
-        };
+        });
       } catch (e: any) {
-        return {
+        results.push({
           id: feed.id,
           name: feed.name,
           region: feed.region,
@@ -117,9 +121,9 @@ async function startServer() {
           status: 'error',
           error: e?.message || String(e),
           ms: Date.now() - start,
-        };
+        });
       }
-    }));
+    }
     res.json({
       checkedAt: new Date().toISOString(),
       gnewsKeyConfigured: !!GNEWS_API_KEY,
@@ -178,17 +182,25 @@ async function startServer() {
           console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível para ${feed.name} em vez de arriscar a quota.`);
           rawItems = cached ? cached.data : [];
         } else {
-          const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
-          if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
-          const res = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
-          gnewsCallsToday++;
-          if (!res.ok) {
-            const body = await res.text().catch(() => '');
-            throw new Error(`GNews status ${res.status}: ${body.slice(0, 200)}`);
+          try {
+            const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
+            if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
+            const res = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
+            gnewsCallsToday++;
+            if (!res.ok) {
+              const body = await res.text().catch(() => '');
+              throw new Error(`GNews status ${res.status}: ${body.slice(0, 200)}`);
+            }
+            const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
+            rawItems = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
+            gnewsCache.set(feed.id, { data: rawItems, timestamp: now });
+          } catch (fetchErr) {
+            // Falha pontual (ex: 429 de burst) — usa a última cache boa, mesmo que já tenha
+            // expirado a TTL normal, em vez de devolver nada. Só fica mesmo vazio se isto
+            // falhar antes de alguma vez ter tido sucesso desde o arranque do servidor.
+            console.error(`GNews fetch falhou para ${feed.name}, a usar cache antiga se existir:`, fetchErr);
+            rawItems = cached ? cached.data : [];
           }
-          const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
-          rawItems = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
-          gnewsCache.set(feed.id, { data: rawItems, timestamp: now });
         }
       } else {
         const parsed = await rssParser.parseURL(feed.url);
@@ -225,6 +237,27 @@ async function startServer() {
     }
   }
 
+  // Busca uma lista de feeds. RSS são serviços independentes entre si — sem risco de
+  // rate-limit partilhado, correm todos em paralelo. Feeds GNews partilham a mesma conta/
+  // quota, e pedidos simultâneos já dispararam o rate-limit de curto prazo da GNews
+  // ("too many requests in a short period of time") mesmo com o dia inteiro de quota por
+  // gastar — por isso correm em sequência, com uma pequena pausa entre cada um.
+  async function fetchAllFeeds(feedList: FeedConfig[]): Promise<any[]> {
+    const rssFeeds = feedList.filter(f => f.type === 'rss');
+    const gnewsFeeds = feedList.filter(f => f.type === 'gnews');
+
+    const rssResultsPromise = Promise.all(rssFeeds.map(fetchFeedItems));
+
+    const gnewsResults: any[][] = [];
+    for (let i = 0; i < gnewsFeeds.length; i++) {
+      gnewsResults.push(await fetchFeedItems(gnewsFeeds[i]));
+      if (i < gnewsFeeds.length - 1) await new Promise(r => setTimeout(r, 400));
+    }
+
+    const rssResults = await rssResultsPromise;
+    return [...rssResults, ...gnewsResults].flat();
+  }
+
   app.get('/api/news', async (req, res) => {
     const feedId = req.query.feed as string;
     const now = Date.now();
@@ -236,8 +269,7 @@ async function startServer() {
 
     try {
       const feedsToFetch = feedId ? FEEDS.filter(f => f.id === feedId) : FEEDS;
-      const perFeedResults = await Promise.all(feedsToFetch.map(fetchFeedItems));
-      let allArticles = perFeedResults.flat();
+      let allArticles = await fetchAllFeeds(feedsToFetch);
 
       allArticles.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
       // Teto generoso (bem acima de 8 feeds × 20) — já não corta regiões de baixo volume.
@@ -270,8 +302,7 @@ async function startServer() {
       return newsCache.data;
     }
     try {
-      const perFeedResults = await Promise.all(FEEDS.map(fetchFeedItems));
-      const allArticles = perFeedResults.flat();
+      const allArticles = await fetchAllFeeds(FEEDS);
       allArticles.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
       const result = allArticles.slice(0, 350);
       if (result.length > 0) {
