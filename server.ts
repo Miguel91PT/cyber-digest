@@ -14,27 +14,28 @@ const rssParser = new Parser({
 // Using Gemini for AI Summaries (Threat Briefing)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const FEEDS = [
-  // Ameaças, Vulnerabilidades e Ransomware
+// Regex de filtragem: aplicados a feeds genéricos para extrair apenas os itens
+// relevantes para a região/tema em causa, já que deixámos de depender de pesquisas
+// do Google News (confirmado: bloqueia pedidos automáticos vindos do Render com 503).
+const EU_FILTER = /NIS2|DORA|ENISA|European Union|European Commission|Cyber Resilience Act|European Parliament|Europol/i;
+const PT_COMPLIANCE_FILTER = /NIS2|DORA|ISO\s?27001|CNCS|regulamento|regime jur[ií]dico|conformidade|obrigatoriedade|Centro Nacional de Ciberseguran[cç]a/i;
+
+const FEEDS: { id: string; name: string; url: string; region: string; category: string; filterKeywords?: RegExp }[] = [
+  // Global — feeds nativos, sem dependência de pesquisa via motor de busca.
   { id: 'hn', name: 'The Hacker News', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
   { id: 'bc', name: 'Bleeping Computer', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
-  { id: 'gnews-vuln', name: 'Google News - Vulnerabilities', url: 'https://news.google.com/rss/search?q=%22vulnerability%22+OR+%22zero-day%22+OR+%22ransomware%22+cybersecurity+when:7d&hl=en-US&gl=US&ceid=US:en', region: 'Global', category: 'Ameaças' },
 
-  // Regulamentação / Compliance (NIS2, DORA, ISO 27001) - Europa e Global
-  { id: 'gnews-nis2-dora', name: 'Google News - NIS2 & DORA', url: 'https://news.google.com/rss/search?q=%22NIS2%22+OR+%22DORA%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Regulamentação' },
-  { id: 'gnews-iso27001', name: 'Google News - ISO 27001', url: 'https://news.google.com/rss/search?q=%22ISO+27001%22+cybersecurity+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Global', category: 'Regulamentação' },
+  // União Europeia — feeds nativos e genéricos, filtrados por palavras-chave para reter
+  // só o que é efetivamente relevante para a UE (NIS2, DORA, ENISA, instituições europeias).
+  { id: 'sw-eu', name: 'SecurityWeek (filtrado UE)', url: 'https://www.securityweek.com/feed', region: 'Europa', category: 'Regulamentação', filterKeywords: EU_FILTER },
+  { id: 'dr-eu', name: 'Dark Reading (filtrado UE)', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Ameaças', filterKeywords: EU_FILTER },
+  { id: 'krebs-eu', name: 'Krebs on Security (filtrado UE)', url: 'https://krebsonsecurity.com/feed/', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
 
-  // União Europeia — cobertura alargada além do NIS2/DORA: a ENISA (cuja própria RSS foi descontinuada),
-  // ameaças/incidentes com alvo em instituições ou Estados-membros da UE, e notícias gerais de cibersegurança na UE.
-  { id: 'gnews-eu-enisa', name: 'Google News - ENISA', url: 'https://news.google.com/rss/search?q=%22ENISA%22+OR+%22European+Union+Agency+for+Cybersecurity%22+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Regulamentação' },
-  { id: 'gnews-eu-threats', name: 'Google News - Ameaças UE', url: 'https://news.google.com/rss/search?q=(cyberattack+OR+%22data+breach%22+OR+ransomware)+(%22European+Union%22+OR+%22EU+institutions%22+OR+Europol)+when:14d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Ameaças' },
-  { id: 'gnews-eu-geral', name: 'Google News - Cibersegurança UE', url: 'https://news.google.com/rss/search?q=cybersecurity+%22European+Union%22+when:10d&hl=en-GB&gl=GB&ceid=GB:en', region: 'Europa', category: 'Geral' },
-
-  // Portugal — foco exclusivo em compliance/legislação (NIS2, DORA, ISO 27001) com impacto direto ou indireto em Portugal e nas suas empresas.
-  // Janela alargada para 30d (vs. 14d) porque queries em português, altamente específicas, têm volume baixo — 14d esgotava-se com frequência.
-  { id: 'gnews-pt-nis2dora', name: 'Google News - NIS2 & DORA (PT)', url: 'https://news.google.com/rss/search?q=(%22NIS2%22+OR+%22DORA%22)+(portugal+OR+empresas+OR+ciberseguran%C3%A7a)+when:30d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Regulamentação' },
-  { id: 'gnews-pt-iso27001', name: 'Google News - ISO 27001 (PT)', url: 'https://news.google.com/rss/search?q=%22ISO+27001%22+(portugal+OR+empresas+OR+certifica%C3%A7%C3%A3o)+when:30d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'Regulamentação' },
-  { id: 'gnews-cncs-regulacao', name: 'Google News - CNCS Regulação', url: 'https://news.google.com/rss/search?q=(%22CNCS%22+OR+%22Centro+Nacional+de+Ciberseguran%C3%A7a%22)+(NIS2+OR+%22regime+jur%C3%ADdico%22+OR+MyCiber+OR+regulamento+OR+DORA)+when:30d&hl=pt-PT&gl=PT&ceid=PT:pt-150', region: 'Portugal', category: 'CNCS' },
+  // Portugal — Pplware é o único feed nativo confirmado para uma fonte portuguesa.
+  // Filtrado para compliance (NIS2/DORA/ISO27001/CNCS/legislação), como pedido — mas é
+  // um blog de tecnologia generalista, por isso é normal que fique magro nalgumas semanas.
+  // Solução própria para Portugal ainda por resolver — ver nota na resposta.
+  { id: 'pplware-pt', name: 'Pplware (filtrado compliance)', url: 'https://pplware.sapo.pt/feed/', region: 'Portugal', category: 'Regulamentação', filterKeywords: PT_COMPLIANCE_FILTER },
 ];
 
 async function startServer() {
@@ -46,11 +47,76 @@ async function startServer() {
     res.json(FEEDS);
   });
 
+  // Endpoint de diagnóstico: testa cada fonte individualmente e devolve o resultado real
+  // (sucesso + nº de itens, ou o erro exato). Existe para não precisarmos de adivinhar
+  // com base nos logs do Render — visita /api/debug/feeds e vê logo o que está a falhar.
+  app.get('/api/debug/feeds', async (req, res) => {
+    const results = await Promise.all(FEEDS.map(async (feed) => {
+      const start = Date.now();
+      try {
+        const parsed = await rssParser.parseURL(feed.url);
+        const matched = feed.filterKeywords
+          ? parsed.items.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.contentSnippet || item.description || ''}`))
+          : parsed.items;
+        return {
+          id: feed.id,
+          name: feed.name,
+          region: feed.region,
+          status: 'ok',
+          rawItemCount: parsed.items.length,
+          // Se há filtro, este é o nº que realmente chega ao site depois de filtrar.
+          matchedItemCount: matched.length,
+          firstTitle: matched[0]?.title || parsed.items[0]?.title || null,
+          ms: Date.now() - start,
+        };
+      } catch (e: any) {
+        return {
+          id: feed.id,
+          name: feed.name,
+          region: feed.region,
+          status: 'error',
+          error: e?.message || String(e),
+          ms: Date.now() - start,
+        };
+      }
+    }));
+    res.json({ checkedAt: new Date().toISOString(), results });
+  });
+
   // Cache simples em memória: evita martelar as fontes a cada visita e serve
   // o último resultado bom conhecido se uma fetch falhar ou vier vazia.
   let newsCache: { data: any[]; timestamp: number } | null = null;
   const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
-  const PER_FEED_CAP = 20; // evita que feeds prolíficos (HN, BleepingComputer) engulam feeds PT de baixo volume
+  const PER_FEED_CAP = 20; // evita que feeds prolíficos (HN, BleepingComputer) engulam feeds PT/UE de baixo volume
+
+  // Função partilhada: faz fetch de UM feed, aplica filterKeywords se existir, e mapeia
+  // para o formato de artigo usado em todo o site. Usada por /api/news e getCurrentArticles,
+  // para não termos duas cópias da mesma lógica a divergir ao longo do tempo.
+  async function fetchFeedItems(feed: typeof FEEDS[number]): Promise<any[]> {
+    try {
+      const parsed = await rssParser.parseURL(feed.url);
+      const source = feed.filterKeywords
+        ? parsed.items.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.contentSnippet || item.description || ''}`))
+        : parsed.items;
+      return source.slice(0, PER_FEED_CAP).map(item => {
+        const parsedDate = item.pubDate ? new Date(item.pubDate) : null;
+        const validDate = parsedDate && !isNaN(parsedDate.getTime());
+        return {
+          id: item.guid || item.link || `${feed.id}-${item.title}`,
+          title: item.title,
+          link: item.link,
+          pubDate: validDate ? item.pubDate : new Date().toISOString(),
+          source: feed.name,
+          region: feed.region,
+          category: feed.category,
+          snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
+        };
+      });
+    } catch (e) {
+      console.error(`Error fetching feed ${feed.name}:`, e);
+      return [];
+    }
+  }
 
   app.get('/api/news', async (req, res) => {
     const feedId = req.query.feed as string;
@@ -63,34 +129,8 @@ async function startServer() {
 
     try {
       const feedsToFetch = feedId ? FEEDS.filter(f => f.id === feedId) : FEEDS;
-
-      let allArticles: any[] = [];
-
-      await Promise.all(feedsToFetch.map(async (feed) => {
-        try {
-          const parsed = await rssParser.parseURL(feed.url);
-          // Cap por feed ANTES de juntar tudo — impede que feeds de alto volume
-          // (Global) empurrem para fora os feeds PT de baixo volume no corte final.
-          const articles = parsed.items.slice(0, PER_FEED_CAP).map(item => {
-            const parsedDate = item.pubDate ? new Date(item.pubDate) : null;
-            const validDate = parsedDate && !isNaN(parsedDate.getTime());
-            return {
-              id: item.guid || item.link || `${feed.id}-${item.title}`,
-              title: item.title,
-              link: item.link,
-              // Data inválida/ausente já não derruba o ecrã no cliente — cai para "agora".
-              pubDate: validDate ? item.pubDate : new Date().toISOString(),
-              source: feed.name,
-              region: feed.region,
-              category: feed.category,
-              snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
-            };
-          });
-          allArticles = allArticles.concat(articles);
-        } catch (e) {
-          console.error(`Error fetching feed ${feed.name}:`, e);
-        }
-      }));
+      const perFeedResults = await Promise.all(feedsToFetch.map(fetchFeedItems));
+      let allArticles = perFeedResults.flat();
 
       allArticles.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
       // Teto generoso (bem acima de 8 feeds × 20) — já não corta regiões de baixo volume.
@@ -123,29 +163,8 @@ async function startServer() {
       return newsCache.data;
     }
     try {
-      let allArticles: any[] = [];
-      await Promise.all(FEEDS.map(async (feed) => {
-        try {
-          const parsed = await rssParser.parseURL(feed.url);
-          const articles = parsed.items.slice(0, PER_FEED_CAP).map(item => {
-            const parsedDate = item.pubDate ? new Date(item.pubDate) : null;
-            const validDate = parsedDate && !isNaN(parsedDate.getTime());
-            return {
-              id: item.guid || item.link || `${feed.id}-${item.title}`,
-              title: item.title,
-              link: item.link,
-              pubDate: validDate ? item.pubDate : new Date().toISOString(),
-              source: feed.name,
-              region: feed.region,
-              category: feed.category,
-              snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
-            };
-          });
-          allArticles = allArticles.concat(articles);
-        } catch (e) {
-          console.error(`Error fetching feed ${feed.name}:`, e);
-        }
-      }));
+      const perFeedResults = await Promise.all(FEEDS.map(fetchFeedItems));
+      const allArticles = perFeedResults.flat();
       allArticles.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
       const result = allArticles.slice(0, 350);
       if (result.length > 0) {
