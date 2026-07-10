@@ -14,28 +14,34 @@ const rssParser = new Parser({
 // Using Gemini for AI Summaries (Threat Briefing)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Regex de filtragem: aplicados a feeds genéricos para extrair apenas os itens
-// relevantes para a região/tema em causa, já que deixámos de depender de pesquisas
-// do Google News (confirmado: bloqueia pedidos automáticos vindos do Render com 503).
+const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
+
+// Regex de filtragem: aplicados a feeds genéricos (RSS) para extrair apenas os itens
+// relevantes para a região/tema em causa. Feeds do tipo 'gnews' não precisam disto —
+// a query já faz a filtragem do lado do servidor da GNews.
 const EU_FILTER = /NIS2|DORA|ENISA|European Union|European Commission|Cyber Resilience Act|European Parliament|Europol/i;
 const PT_COMPLIANCE_FILTER = /NIS2|DORA|ISO\s?27001|CNCS|regulamento|regime jur[ií]dico|conformidade|obrigatoriedade|Centro Nacional de Ciberseguran[cç]a/i;
 
-const FEEDS: { id: string; name: string; url: string; region: string; category: string; filterKeywords?: RegExp }[] = [
+type FeedConfig =
+  | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'rss'; url: string }
+  | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'gnews'; gnewsQuery: string; gnewsLang: string; gnewsCountry?: string };
+
+const FEEDS: FeedConfig[] = [
   // Global — feeds nativos, sem dependência de pesquisa via motor de busca.
-  { id: 'hn', name: 'The Hacker News', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
-  { id: 'bc', name: 'Bleeping Computer', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
+  { id: 'hn', name: 'The Hacker News', type: 'rss', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
+  { id: 'bc', name: 'Bleeping Computer', type: 'rss', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
 
   // União Europeia — feeds nativos e genéricos, filtrados por palavras-chave para reter
   // só o que é efetivamente relevante para a UE (NIS2, DORA, ENISA, instituições europeias).
-  { id: 'sw-eu', name: 'SecurityWeek (filtrado UE)', url: 'https://www.securityweek.com/feed', region: 'Europa', category: 'Regulamentação', filterKeywords: EU_FILTER },
-  { id: 'dr-eu', name: 'Dark Reading (filtrado UE)', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Ameaças', filterKeywords: EU_FILTER },
-  { id: 'krebs-eu', name: 'Krebs on Security (filtrado UE)', url: 'https://krebsonsecurity.com/feed/', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
+  { id: 'sw-eu', name: 'SecurityWeek (filtrado UE)', type: 'rss', url: 'https://www.securityweek.com/feed', region: 'Europa', category: 'Regulamentação', filterKeywords: EU_FILTER },
+  { id: 'dr-eu', name: 'Dark Reading (filtrado UE)', type: 'rss', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Ameaças', filterKeywords: EU_FILTER },
+  { id: 'krebs-eu', name: 'Krebs on Security (filtrado UE)', type: 'rss', url: 'https://krebsonsecurity.com/feed/', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
 
-  // Portugal — Pplware é o único feed nativo confirmado para uma fonte portuguesa.
-  // Filtrado para compliance (NIS2/DORA/ISO27001/CNCS/legislação), como pedido — mas é
-  // um blog de tecnologia generalista, por isso é normal que fique magro nalgumas semanas.
-  // Solução própria para Portugal ainda por resolver — ver nota na resposta.
-  { id: 'pplware-pt', name: 'Pplware (filtrado compliance)', url: 'https://pplware.sapo.pt/feed/', region: 'Portugal', category: 'Regulamentação', filterKeywords: PT_COMPLIANCE_FILTER },
+  // Portugal — Pplware fica como rede de segurança gratuita (RSS nativo, sem custo de quota),
+  // e agora junta-se a fonte "a sério": pesquisa dedicada via GNews (API própria para isto,
+  // ao contrário do Google News que bloqueia pedidos automáticos do Render).
+  { id: 'pplware-pt', name: 'Pplware (filtrado compliance)', type: 'rss', url: 'https://pplware.sapo.pt/feed/', region: 'Portugal', category: 'Regulamentação', filterKeywords: PT_COMPLIANCE_FILTER },
+  { id: 'gnews-pt-compliance', name: 'GNews - Compliance PT', type: 'gnews', gnewsQuery: '(NIS2 OR DORA OR "ISO 27001") AND (Portugal OR portuguesa OR empresas)', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Regulamentação' },
 ];
 
 async function startServer() {
@@ -54,19 +60,38 @@ async function startServer() {
     const results = await Promise.all(FEEDS.map(async (feed) => {
       const start = Date.now();
       try {
-        const parsed = await rssParser.parseURL(feed.url);
+        let rawItems: { title?: string; description?: string }[];
+
+        if (feed.type === 'gnews') {
+          if (!GNEWS_API_KEY) throw new Error('GNEWS_API_KEY não está definida no ambiente');
+          const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
+          if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
+          const r = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
+          if (!r.ok) {
+            const body = await r.text().catch(() => '');
+            throw new Error(`GNews status ${r.status}: ${body.slice(0, 200)}`);
+          }
+          const data = await r.json() as { articles?: { title: string; description?: string }[] };
+          rawItems = data.articles || [];
+        } else {
+          const parsed = await rssParser.parseURL(feed.url);
+          rawItems = parsed.items.map(i => ({ title: i.title, description: i.contentSnippet || i.description }));
+        }
+
         const matched = feed.filterKeywords
-          ? parsed.items.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.contentSnippet || item.description || ''}`))
-          : parsed.items;
+          ? rawItems.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.description || ''}`))
+          : rawItems;
+
         return {
           id: feed.id,
           name: feed.name,
           region: feed.region,
+          type: feed.type,
           status: 'ok',
-          rawItemCount: parsed.items.length,
+          rawItemCount: rawItems.length,
           // Se há filtro, este é o nº que realmente chega ao site depois de filtrar.
           matchedItemCount: matched.length,
-          firstTitle: matched[0]?.title || parsed.items[0]?.title || null,
+          firstTitle: matched[0]?.title || rawItems[0]?.title || null,
           ms: Date.now() - start,
         };
       } catch (e: any) {
@@ -74,13 +99,20 @@ async function startServer() {
           id: feed.id,
           name: feed.name,
           region: feed.region,
+          type: feed.type,
           status: 'error',
           error: e?.message || String(e),
           ms: Date.now() - start,
         };
       }
     }));
-    res.json({ checkedAt: new Date().toISOString(), results });
+    res.json({
+      checkedAt: new Date().toISOString(),
+      gnewsKeyConfigured: !!GNEWS_API_KEY,
+      gnewsCallsToday,
+      gnewsDailySafetyCap: GNEWS_DAILY_SAFETY_CAP,
+      results,
+    });
   });
 
   // Cache simples em memória: evita martelar as fontes a cada visita e serve
@@ -89,15 +121,73 @@ async function startServer() {
   const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
   const PER_FEED_CAP = 20; // evita que feeds prolíficos (HN, BleepingComputer) engulam feeds PT/UE de baixo volume
 
-  // Função partilhada: faz fetch de UM feed, aplica filterKeywords se existir, e mapeia
-  // para o formato de artigo usado em todo o site. Usada por /api/news e getCurrentArticles,
-  // para não termos duas cópias da mesma lógica a divergir ao longo do tempo.
-  async function fetchFeedItems(feed: typeof FEEDS[number]): Promise<any[]> {
+  // A GNews tem quota diária fixa (100/dia no plano gratuito) — ao contrário dos feeds
+  // nativos, que são de graça e sem limite, esta precisa da sua própria cache mais longa
+  // e de um contador diário como rede de segurança final. Isto importa especialmente se
+  // a app passar a ter mais do que um visitante ocasional: o cache geral de 10 min, por si
+  // só, poderia gerar até 144 fetches/dia com tráfego constante — acima do limite da GNews.
+  let gnewsCache: { data: { title?: string; link?: string; pubDate?: string; description?: string }[]; timestamp: number } | null = null;
+  const GNEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora — no máximo 24 pedidos/dia, bem abaixo do limite de 100
+  const GNEWS_DAILY_SAFETY_CAP = 90; // pára antes do limite real, como margem de segurança
+  let gnewsCallsToday = 0;
+  let gnewsQuotaDay = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD' em UTC
+
+  function canCallGnewsToday(): boolean {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== gnewsQuotaDay) {
+      gnewsQuotaDay = today;
+      gnewsCallsToday = 0;
+    }
+    return gnewsCallsToday < GNEWS_DAILY_SAFETY_CAP;
+  }
+
+  // Função partilhada: faz fetch de UM feed (RSS ou GNews), aplica filterKeywords se
+  // existir, e mapeia para o formato de artigo usado em todo o site. Usada por /api/news
+  // e getCurrentArticles, para não termos duas cópias da mesma lógica a divergir.
+  async function fetchFeedItems(feed: FeedConfig): Promise<any[]> {
     try {
-      const parsed = await rssParser.parseURL(feed.url);
+      // Normaliza ambas as fontes (RSS e GNews) para a mesma forma antes de filtrar/mapear.
+      let rawItems: { title?: string; link?: string; pubDate?: string; description?: string; guid?: string }[];
+
+      if (feed.type === 'gnews') {
+        if (!GNEWS_API_KEY) {
+          console.error(`Feed ${feed.name}: GNEWS_API_KEY não está definida no ambiente.`);
+          return [];
+        }
+        const now = Date.now();
+        if (gnewsCache && (now - gnewsCache.timestamp) < GNEWS_CACHE_TTL_MS) {
+          rawItems = gnewsCache.data;
+        } else if (!canCallGnewsToday()) {
+          console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível em vez de arriscar a quota.`);
+          rawItems = gnewsCache ? gnewsCache.data : [];
+        } else {
+          const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
+          if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
+          const res = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
+          gnewsCallsToday++;
+          if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            throw new Error(`GNews status ${res.status}: ${body.slice(0, 200)}`);
+          }
+          const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
+          rawItems = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
+          gnewsCache = { data: rawItems, timestamp: now };
+        }
+      } else {
+        const parsed = await rssParser.parseURL(feed.url);
+        rawItems = parsed.items.map(item => ({
+          title: item.title,
+          link: item.link,
+          pubDate: item.pubDate,
+          description: item.contentSnippet || item.description,
+          guid: item.guid,
+        }));
+      }
+
       const source = feed.filterKeywords
-        ? parsed.items.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.contentSnippet || item.description || ''}`))
-        : parsed.items;
+        ? rawItems.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.description || ''}`))
+        : rawItems;
+
       return source.slice(0, PER_FEED_CAP).map(item => {
         const parsedDate = item.pubDate ? new Date(item.pubDate) : null;
         const validDate = parsedDate && !isNaN(parsedDate.getTime());
@@ -109,7 +199,7 @@ async function startServer() {
           source: feed.name,
           region: feed.region,
           category: feed.category,
-          snippet: (item.contentSnippet || item.description || '').substring(0, 200) + '...',
+          snippet: (item.description || '').substring(0, 200) + '...',
         };
       });
     } catch (e) {
