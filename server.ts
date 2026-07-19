@@ -24,14 +24,23 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 
-// Regex de filtragem: aplicado a feeds RSS genéricos (que não são específicos de região)
-// para reter só os itens relevantes. As queries GNews já vêm filtradas do lado do servidor
-// deles, por isso não precisam disto.
-const EU_FILTER = /\bNIS2\b|\bDORA\b|\bENISA\b|\bEU\b|European|Cyber Resilience Act|Europol|GDPR|Brussels/i;
+// Filtragem da UE em DUAS partes que TÊM AMBAS de estar presentes:
+//   1. um termo de CIBERSEGURANÇA (senão entram notícias europeias genéricas — política,
+//      economia, desporto — que era exatamente a queixa: "não são sobre cibersegurança").
+//   2. um termo EUROPEU (senão entram ameaças globais sem ligação à UE).
+// O erro anterior era o filtro aceitar QUALQUER um dos dois (bastava "EU" ou "European"),
+// pelo que qualquer artigo europeu passava, mesmo sem nada de cibersegurança.
+const CYBER_TERMS = /\bNIS2\b|\bDORA\b|\bENISA\b|Cyber\s?Resilience Act|\bGDPR\b|cyber|ransomware|malware|phishing|hack|breach|vulnerabilit|exploit|data\s?leak|infosec|security|threat|attack|APT|zero.?day|encrypt/i;
+const EUROPE_TERMS = /\bEU\b|European|Europe|Europol|Brussels|ENISA|GDPR|NIS2|\bDORA\b/i;
+
+// Um item da UE só é relevante se bater NAS DUAS regex.
+function isRelevantEU(text: string): boolean {
+  return CYBER_TERMS.test(text) && EUROPE_TERMS.test(text);
+}
 
 type FeedConfig =
-  | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'rss'; url: string }
-  | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'gnews'; gnewsQuery: string; gnewsLang: string; gnewsCountry?: string };
+  | { id: string; name: string; region: string; category: string; filterFn?: (text: string) => boolean; type: 'rss'; url: string }
+  | { id: string; name: string; region: string; category: string; filterFn?: (text: string) => boolean; type: 'gnews'; gnewsQuery: string; gnewsLang: string; gnewsCountry?: string };
 
 // ESTRATÉGIA DE FONTES:
 // - Global: feeds RSS nativos de fontes de topo (The Hacker News, Bleeping Computer) — de graça,
@@ -47,11 +56,15 @@ const FEEDS: FeedConfig[] = [
   { id: 'sw', name: 'SecurityWeek', type: 'rss', url: 'https://www.securityweek.com/feed', region: 'Global', category: 'Ameaças' },
 
   // ---------- UNIÃO EUROPEIA ----------
-  // Fonte principal: duas queries GNews (uma de compliance, uma de ameaças/incidentes na UE).
-  { id: 'gnews-eu-compliance', name: 'GNews · Regulação UE', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR ENISA OR "Cyber Resilience Act"', gnewsLang: 'en', region: 'Europa', category: 'Regulamentação' },
-  { id: 'gnews-eu-threats', name: 'GNews · Ameaças UE', type: 'gnews', gnewsQuery: '(cyberattack OR ransomware OR "data breach") AND (Europe OR EU OR European)', gnewsLang: 'en', region: 'Europa', category: 'Ameaças' },
+  // Fonte principal: duas queries GNews. IMPORTANTE: a GNews dá precedência MAIS ALTA ao OR
+  // do que ao AND (o contrário do habitual), por isso é obrigatório usar parênteses para
+  // agrupar. Ambas as queries ANCORAM sempre no contexto europeu — sem isso, uma lista de
+  // "NIS2 OR DORA OR..." devolvia artigos do mundo inteiro (ex: "DORA" como nome próprio),
+  // que foi exatamente o que trouxe notícias nada relacionadas à secção UE.
+  { id: 'gnews-eu-compliance', name: 'GNews · Regulação UE', type: 'gnews', gnewsQuery: '(NIS2 OR DORA OR ENISA OR "Cyber Resilience Act" OR GDPR) AND (Europe OR EU OR European OR Brussels)', gnewsLang: 'en', region: 'Europa', category: 'Regulamentação', filterFn: isRelevantEU },
+  { id: 'gnews-eu-threats', name: 'GNews · Ameaças UE', type: 'gnews', gnewsQuery: '(cyberattack OR ransomware OR "data breach" OR cybersecurity) AND (Europe OR "European Union" OR European OR Europol)', gnewsLang: 'en', region: 'Europa', category: 'Ameaças', filterFn: isRelevantEU },
   // Complemento: The Record cobre muita política/regulação europeia de cibersegurança.
-  { id: 'record-eu', name: 'The Record (filtrado UE)', type: 'rss', url: 'https://therecord.media/feed', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
+  { id: 'record-eu', name: 'The Record (filtrado UE)', type: 'rss', url: 'https://therecord.media/feed', region: 'Europa', category: 'Geral', filterFn: isRelevantEU },
 
   // ---------- PORTUGAL ----------
   // Fonte principal: duas queries GNews em pt-PT — uma de compliance, uma de ciberataques em Portugal.
@@ -97,8 +110,8 @@ async function startServer() {
           rawItems = parsed.items.map(i => ({ title: i.title, description: i.contentSnippet || i.description }));
         }
 
-        const matched = feed.filterKeywords
-          ? rawItems.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.description || ''}`))
+        const matched = feed.filterFn
+          ? rawItems.filter(item => feed.filterFn!(`${item.title || ''} ${item.description || ''}`))
           : rawItems;
 
         results.push({
@@ -164,7 +177,7 @@ async function startServer() {
     return gnewsCallsToday < GNEWS_DAILY_SAFETY_CAP;
   }
 
-  // Função partilhada: faz fetch de UM feed (RSS ou GNews), aplica filterKeywords se
+  // Função partilhada: faz fetch de UM feed (RSS ou GNews), aplica filterFn se
   // existir, e mapeia para o formato de artigo usado em todo o site. Usada por /api/news
   // e getCurrentArticles, para não termos duas cópias da mesma lógica a divergir.
   async function fetchFeedItems(feed: FeedConfig): Promise<any[]> {
@@ -216,8 +229,8 @@ async function startServer() {
         }));
       }
 
-      const source = feed.filterKeywords
-        ? rawItems.filter(item => feed.filterKeywords!.test(`${item.title || ''} ${item.description || ''}`))
+      const source = feed.filterFn
+        ? rawItems.filter(item => feed.filterFn!(`${item.title || ''} ${item.description || ''}`))
         : rawItems;
 
       return source.slice(0, PER_FEED_CAP).map(item => {
