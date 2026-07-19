@@ -4,8 +4,16 @@ import { createServer as createViteServer } from 'vite';
 import Parser from 'rss-parser';
 import { GoogleGenAI } from '@google/genai';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const rssParser = new Parser({
+  timeout: 8000,
+  headers: {
+    // Alguns feeds (ex: Bleeping Computer) devolvem 403 a clientes sem User-Agent
+    // reconhecível. Fingir um browser normal resolve, e é uma prática comum e aceite
+    // para leitores de RSS.
+    'User-Agent': 'Mozilla/5.0 (compatible; CybernewsBot/1.0; +https://cyber-digest.onrender.com)',
+    'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+  },
   customFields: {
     item: ['media:content', 'enclosure', 'content:encoded', 'description'],
   },
@@ -16,46 +24,39 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 
-// Regex de filtragem: aplicados a feeds genéricos (RSS) para extrair apenas os itens
-// relevantes para a região/tema em causa. Feeds do tipo 'gnews' não precisam disto —
-// a query já faz a filtragem do lado do servidor da GNews.
-// Nota: inclui "\bEU\b" e "European" soltos — headlines reais raramente escrevem
-// "European Union" por extenso; escrevem "EU" ou só "European". Confirmado ao inspecionar
-// o feed real do Dark Reading: artigos genuinamente sobre a UE ("European Organizations...",
-// "...at EU, Asia Hospitality Orgs") não batiam com a versão anterior, mais restrita.
-const EU_FILTER = /\bNIS2\b|\bDORA\b|\bENISA\b|\bEU\b|European|Cyber Resilience Act|Europol/i;
-// Nota: só termos que são, por si só, quase exclusivamente sobre compliance de cibersegurança.
-// Removidos "regulamento", "regime jurídico", "conformidade", "obrigatoriedade" — são
-// vocabulário jurídico/administrativo genérico (aplica-se a qualquer lei, não só cibersegurança),
-// e a Pplware, sendo um blog de tecnologia generalista, cobre imensa regulação não relacionada
-// (TVDE, telecomunicações, etc.) onde esses termos aparecem sem qualquer ligação a cibersegurança.
-const PT_COMPLIANCE_FILTER = /NIS2|DORA|ISO\s?27001|CNCS|Centro Nacional de Ciberseguran[cç]a/i;
+// Regex de filtragem: aplicado a feeds RSS genéricos (que não são específicos de região)
+// para reter só os itens relevantes. As queries GNews já vêm filtradas do lado do servidor
+// deles, por isso não precisam disto.
+const EU_FILTER = /\bNIS2\b|\bDORA\b|\bENISA\b|\bEU\b|European|Cyber Resilience Act|Europol|GDPR|Brussels/i;
 
 type FeedConfig =
   | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'rss'; url: string }
   | { id: string; name: string; region: string; category: string; filterKeywords?: RegExp; type: 'gnews'; gnewsQuery: string; gnewsLang: string; gnewsCountry?: string };
 
+// ESTRATÉGIA DE FONTES:
+// - Global: feeds RSS nativos de fontes de topo (The Hacker News, Bleeping Computer) — de graça,
+//   alto volume, sem depender de quota. É onde os feeds nativos brilham.
+// - Portugal e UE: a GNews é a fonte PRINCIPAL, porque é uma pesquisa dedicada, segmentada por
+//   país/idioma e por tema — exatamente o que dá cobertura regional consistente e credível.
+//   Feeds RSS europeus credíveis (The Record, Euronews) entram como complemento.
+// Cada região tem MAIS DO QUE UMA query/fonte, para nunca ficar vazia se uma falhar num dado dia.
 const FEEDS: FeedConfig[] = [
-  // Global — feeds nativos, sem dependência de pesquisa via motor de busca.
+  // ---------- GLOBAL ----------
   { id: 'hn', name: 'The Hacker News', type: 'rss', url: 'https://feeds.feedburner.com/TheHackersNews', region: 'Global', category: 'Ameaças' },
   { id: 'bc', name: 'Bleeping Computer', type: 'rss', url: 'https://www.bleepingcomputer.com/feed/', region: 'Global', category: 'Ameaças' },
+  { id: 'sw', name: 'SecurityWeek', type: 'rss', url: 'https://www.securityweek.com/feed', region: 'Global', category: 'Ameaças' },
 
-  // União Europeia — feeds nativos e genéricos, filtrados por palavras-chave para reter
-  // só o que é efetivamente relevante para a UE (NIS2, DORA, ENISA, instituições europeias),
-  // mais uma pesquisa dedicada via GNews (mesmo mecanismo que já funciona para Portugal).
-  { id: 'sw-eu', name: 'SecurityWeek (filtrado UE)', type: 'rss', url: 'https://www.securityweek.com/feed', region: 'Europa', category: 'Regulamentação', filterKeywords: EU_FILTER },
-  { id: 'dr-eu', name: 'Dark Reading (filtrado UE)', type: 'rss', url: 'https://www.darkreading.com/rss.xml', region: 'Europa', category: 'Ameaças', filterKeywords: EU_FILTER },
-  { id: 'krebs-eu', name: 'Krebs on Security (filtrado UE)', type: 'rss', url: 'https://krebsonsecurity.com/feed/', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
-  { id: 'gnews-eu-compliance', name: 'GNews - Compliance UE', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR ENISA OR "Cyber Resilience Act"', gnewsLang: 'en', region: 'Europa', category: 'Regulamentação' },
+  // ---------- UNIÃO EUROPEIA ----------
+  // Fonte principal: duas queries GNews (uma de compliance, uma de ameaças/incidentes na UE).
+  { id: 'gnews-eu-compliance', name: 'GNews · Regulação UE', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR ENISA OR "Cyber Resilience Act"', gnewsLang: 'en', region: 'Europa', category: 'Regulamentação' },
+  { id: 'gnews-eu-threats', name: 'GNews · Ameaças UE', type: 'gnews', gnewsQuery: '(cyberattack OR ransomware OR "data breach") AND (Europe OR EU OR European)', gnewsLang: 'en', region: 'Europa', category: 'Ameaças' },
+  // Complemento: The Record cobre muita política/regulação europeia de cibersegurança.
+  { id: 'record-eu', name: 'The Record (filtrado UE)', type: 'rss', url: 'https://therecord.media/feed', region: 'Europa', category: 'Geral', filterKeywords: EU_FILTER },
 
-  // Portugal — Pplware fica como rede de segurança gratuita (RSS nativo, sem custo de quota),
-  // e agora junta-se a fonte "a sério": pesquisa dedicada via GNews (API própria para isto,
-  // ao contrário do Google News que bloqueia pedidos automáticos do Render).
-  { id: 'pplware-pt', name: 'Pplware (filtrado compliance)', type: 'rss', url: 'https://pplware.sapo.pt/feed/', region: 'Portugal', category: 'Regulamentação', filterKeywords: PT_COMPLIANCE_FILTER },
-  // Query alargada: a exigência de "Portugal/portuguesa/empresas" no próprio texto era
-  // redundante com lang=pt+country=pt (que já restringe à esfera portuguesa) e reduzia
-  // demasiado os resultados — só 1 artigo no primeiro teste real.
-  { id: 'gnews-pt-compliance', name: 'GNews - Compliance PT', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR "ISO 27001" OR CNCS', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Regulamentação' },
+  // ---------- PORTUGAL ----------
+  // Fonte principal: duas queries GNews em pt-PT — uma de compliance, uma de ciberataques em Portugal.
+  { id: 'gnews-pt-compliance', name: 'GNews · Regulação PT', type: 'gnews', gnewsQuery: 'NIS2 OR DORA OR "ISO 27001" OR CNCS OR cibersegurança', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Regulamentação' },
+  { id: 'gnews-pt-threats', name: 'GNews · Ameaças PT', type: 'gnews', gnewsQuery: 'ciberataque OR ransomware OR "fuga de dados" OR cibersegurança', gnewsLang: 'pt', gnewsCountry: 'pt', region: 'Portugal', category: 'Ameaças' },
 ];
 
 async function startServer() {
@@ -147,7 +148,9 @@ async function startServer() {
   // Map (não uma única cache) porque agora há duas queries GNews (PT e UE) — com uma única
   // cache partilhada, a segunda substituiria sempre o resultado da primeira.
   const gnewsCache = new Map<string, { data: { title?: string; link?: string; pubDate?: string; description?: string }[]; timestamp: number }>();
-  const GNEWS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora por feed — no máximo ~24 pedidos/dia por query, bem abaixo do limite de 100
+  // 2 horas por feed. Agora há 4 queries GNews (2 PT + 2 UE); a 1h davam até ~96 chamadas/dia,
+  // demasiado perto do limite de 100. A 2h: no máximo ~48/dia, com folga confortável.
+  const GNEWS_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
   const GNEWS_DAILY_SAFETY_CAP = 90; // pára antes do limite real, como margem de segurança (partilhado por todas as queries GNews)
   let gnewsCallsToday = 0;
   let gnewsQuotaDay = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD' em UTC
@@ -251,7 +254,9 @@ async function startServer() {
     const gnewsResults: any[][] = [];
     for (let i = 0; i < gnewsFeeds.length; i++) {
       gnewsResults.push(await fetchFeedItems(gnewsFeeds[i]));
-      if (i < gnewsFeeds.length - 1) await new Promise(r => setTimeout(r, 400));
+      // 600ms entre queries GNews — com 4 queries, evita o rate-limit de curto prazo
+      // ("too many requests in a short period") mesmo quando a cache expira para todas ao mesmo tempo.
+      if (i < gnewsFeeds.length - 1) await new Promise(r => setTimeout(r, 600));
     }
 
     const rssResults = await rssResultsPromise;
