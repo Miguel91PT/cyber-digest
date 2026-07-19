@@ -96,15 +96,19 @@ async function startServer() {
 
         if (feed.type === 'gnews') {
           if (!GNEWS_API_KEY) throw new Error('GNEWS_API_KEY não está definida no ambiente');
-          const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
-          if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
-          const r = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
-          if (!r.ok) {
-            const body = await r.text().catch(() => '');
-            throw new Error(`GNews status ${r.status}: ${body.slice(0, 200)}`);
-          }
-          const data = await r.json() as { articles?: { title: string; description?: string }[] };
-          rawItems = data.articles || [];
+          // Passa pela MESMA fila global que o /api/news, para o debug não se sobrepor a
+          // chamadas GNews reais e disparar o 429 de burst.
+          rawItems = await enqueueGnewsCall(async () => {
+            const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
+            if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
+            const r = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
+            if (!r.ok) {
+              const body = await r.text().catch(() => '');
+              throw new Error(`GNews status ${r.status}: ${body.slice(0, 200)}`);
+            }
+            const data = await r.json() as { articles?: { title: string; description?: string }[] };
+            return data.articles || [];
+          });
         } else {
           const parsed = await rssParser.parseURL(feed.url);
           rawItems = parsed.items.map(i => ({ title: i.title, description: i.contentSnippet || i.description }));
@@ -168,6 +172,32 @@ async function startServer() {
   let gnewsCallsToday = 0;
   let gnewsQuotaDay = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD' em UTC
 
+  // FILA GLOBAL de chamadas GNews. O bug do 429 de "burst" vinha daqui: a pausa de 600ms
+  // só existia DENTRO de uma chamada a fetchAllFeeds. Se dois pedidos ao /api/news chegassem
+  // quase ao mesmo tempo (dois visitantes, prefetch do browser, etc.), cada um arrancava a
+  // sua própria sequência de chamadas GNews, e essas sequências SOBREPUNHAM-SE — disparando
+  // o limite de curto prazo da GNews mesmo com quota diária de sobra.
+  // Esta fila garante, a nível de TODO o servidor, que só há UMA chamada GNews de cada vez,
+  // com um intervalo mínimo garantido entre elas, independentemente de quantos pedidos chegam.
+  const GNEWS_MIN_GAP_MS = 1500; // intervalo mínimo garantido entre quaisquer duas chamadas GNews
+  let gnewsQueue: Promise<any> = Promise.resolve();
+  let lastGnewsCallAt = 0;
+
+  // Enfileira uma chamada GNews: espera a sua vez, respeita o intervalo mínimo, e só então corre.
+  function enqueueGnewsCall<T>(fn: () => Promise<T>): Promise<T> {
+    const run = gnewsQueue.then(async () => {
+      const sinceLast = Date.now() - lastGnewsCallAt;
+      if (sinceLast < GNEWS_MIN_GAP_MS) {
+        await new Promise(r => setTimeout(r, GNEWS_MIN_GAP_MS - sinceLast));
+      }
+      lastGnewsCallAt = Date.now();
+      return fn();
+    });
+    // A fila avança mesmo que esta chamada falhe (não queremos que um erro trave tudo).
+    gnewsQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   function canCallGnewsToday(): boolean {
     const today = new Date().toISOString().slice(0, 10);
     if (today !== gnewsQuotaDay) {
@@ -194,22 +224,30 @@ async function startServer() {
         const cached = gnewsCache.get(feed.id);
         if (cached && (now - cached.timestamp) < GNEWS_CACHE_TTL_MS) {
           rawItems = cached.data;
-        } else if (!canCallGnewsToday()) {
-          console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível para ${feed.name} em vez de arriscar a quota.`);
-          rawItems = cached ? cached.data : [];
         } else {
           try {
-            const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
-            if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
-            const res = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
-            gnewsCallsToday++;
-            if (!res.ok) {
-              const body = await res.text().catch(() => '');
-              throw new Error(`GNews status ${res.status}: ${body.slice(0, 200)}`);
-            }
-            const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
-            rawItems = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
-            gnewsCache.set(feed.id, { data: rawItems, timestamp: now });
+            // Toda a chamada GNews passa pela fila global: garante que nunca há duas
+            // chamadas GNews em simultâneo no servidor, com intervalo mínimo entre elas.
+            // A verificação de quota diária e o incremento acontecem AQUI DENTRO, no momento
+            // em que a chamada realmente corre, para também serem serializados.
+            rawItems = await enqueueGnewsCall(async () => {
+              if (!canCallGnewsToday()) {
+                console.warn(`GNews: limite diário de segurança (${GNEWS_DAILY_SAFETY_CAP}) atingido — a usar a última cache disponível para ${feed.name}.`);
+                return cached ? cached.data : [];
+              }
+              const params = new URLSearchParams({ q: feed.gnewsQuery, lang: feed.gnewsLang, max: '10', apikey: GNEWS_API_KEY });
+              if (feed.gnewsCountry) params.set('country', feed.gnewsCountry);
+              const res = await fetch(`https://gnews.io/api/v4/search?${params.toString()}`);
+              gnewsCallsToday++;
+              if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                throw new Error(`GNews status ${res.status}: ${body.slice(0, 200)}`);
+              }
+              const data = await res.json() as { articles?: { title: string; url: string; publishedAt: string; description?: string }[] };
+              const mapped = (data.articles || []).map(a => ({ title: a.title, link: a.url, pubDate: a.publishedAt, description: a.description }));
+              gnewsCache.set(feed.id, { data: mapped, timestamp: Date.now() });
+              return mapped;
+            });
           } catch (fetchErr) {
             // Falha pontual (ex: 429 de burst) — usa a última cache boa, mesmo que já tenha
             // expirado a TTL normal, em vez de devolver nada. Só fica mesmo vazio se isto
@@ -253,27 +291,14 @@ async function startServer() {
     }
   }
 
-  // Busca uma lista de feeds. RSS são serviços independentes entre si — sem risco de
-  // rate-limit partilhado, correm todos em paralelo. Feeds GNews partilham a mesma conta/
-  // quota, e pedidos simultâneos já dispararam o rate-limit de curto prazo da GNews
-  // ("too many requests in a short period of time") mesmo com o dia inteiro de quota por
-  // gastar — por isso correm em sequência, com uma pequena pausa entre cada um.
+  // Busca uma lista de feeds. Já não é preciso serializar aqui: as chamadas GNews passam
+  // todas pela fila global (enqueueGnewsCall), que garante que nunca há duas em simultâneo
+  // no servidor inteiro, com intervalo mínimo entre elas — mesmo entre pedidos concorrentes.
+  // Por isso podemos simplesmente disparar tudo; a fila trata da ordem e do espaçamento GNews,
+  // e os feeds RSS (sem limite partilhado) correm em paralelo à vontade.
   async function fetchAllFeeds(feedList: FeedConfig[]): Promise<any[]> {
-    const rssFeeds = feedList.filter(f => f.type === 'rss');
-    const gnewsFeeds = feedList.filter(f => f.type === 'gnews');
-
-    const rssResultsPromise = Promise.all(rssFeeds.map(fetchFeedItems));
-
-    const gnewsResults: any[][] = [];
-    for (let i = 0; i < gnewsFeeds.length; i++) {
-      gnewsResults.push(await fetchFeedItems(gnewsFeeds[i]));
-      // 600ms entre queries GNews — com 4 queries, evita o rate-limit de curto prazo
-      // ("too many requests in a short period") mesmo quando a cache expira para todas ao mesmo tempo.
-      if (i < gnewsFeeds.length - 1) await new Promise(r => setTimeout(r, 600));
-    }
-
-    const rssResults = await rssResultsPromise;
-    return [...rssResults, ...gnewsResults].flat();
+    const perFeedResults = await Promise.all(feedList.map(fetchFeedItems));
+    return perFeedResults.flat();
   }
 
   app.get('/api/news', async (req, res) => {
