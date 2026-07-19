@@ -2,6 +2,16 @@ import { formatDistanceToNow } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import type { Article } from '../types';
 
+function safeRelativeDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return ''; // data inválida/ausente — não rebenta a página, só não mostra "há X"
+  try {
+    return formatDistanceToNow(d, { addSuffix: true, locale: pt });
+  } catch {
+    return '';
+  }
+}
+
 export function ArticleCard({ article }: { article: Article }) {
   let tagLabel = article.category || 'Geral';
   let tagClass = '';
@@ -9,24 +19,14 @@ export function ArticleCard({ article }: { article: Article }) {
   if (tagLabel === 'Ameaças') tagClass = 'critical';
   if (tagLabel === 'Regulamentação' || tagLabel === 'CNCS') tagClass = 'warn';
 
-  let formattedDate = 'Data desconhecida';
-  try {
-    const date = new Date(article.pubDate);
-    if (!isNaN(date.getTime())) {
-      formattedDate = formatDistanceToNow(date, { addSuffix: true, locale: pt });
-    } else if (article.pubDate) {
-      formattedDate = article.pubDate;
-    }
-  } catch (e) {
-    if (article.pubDate) formattedDate = article.pubDate;
-  }
+  const relativeDate = safeRelativeDate(article.pubDate);
 
   return (
     <article className="item">
       <div className="item-meta">
         {tagLabel && <span className={`tag ${tagClass}`}>{tagLabel}</span>}
         {article.region.includes('Europ') && <span className="tag eu-badge">Europa</span>}
-        <span>{article.source} · {formattedDate}</span>
+        <span>{article.source}{relativeDate ? ` · ${relativeDate}` : ''}</span>
       </div>
       <h3>
         <a href={article.link} target="_blank" rel="noopener noreferrer">
