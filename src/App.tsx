@@ -11,7 +11,7 @@ export default function App() {
   const fetchNews = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/news', { cache: 'no-cache' });
+      const res = await fetch('/api/news');
       if (!res.ok) throw new Error('Failed to fetch');
       const data = await res.json();
       setArticles(data);
@@ -32,7 +32,7 @@ export default function App() {
   const euArticles = filteredArticles.filter(a => a.region === 'Europa' || a.region === 'Europe' || a.region === 'Global/EU').slice(0, 5);
   const globalArticles = filteredArticles.filter(a => a.region === 'Global').slice(0, 5);
 
-  const availableTags = ['Todas', 'Ameaças', 'Regulamentação', 'CNCS'];
+  const availableTags = ['Todas', 'Ameaças', 'Regulamentação', 'CNCS', 'Geral'];
 
   return (
     <>
@@ -52,7 +52,7 @@ export default function App() {
         </div>
         <div className="header-inner">
           <div className="eyebrow">Digest diário de cibersegurança</div>
-          <h1>Sinal</h1>
+          <h1>Cybernews</h1>
           <nav className="issue-nav" aria-label="Secções desta edição">
             <a href="#pt">Portugal</a>
             <a href="#ue">União Europeia</a>
@@ -158,21 +158,21 @@ export default function App() {
 
         <section className="sources" id="fontes">
           <div className="region-head">
-            <h2>Fontes que sigo</h2>
+            <h2>Fontes</h2>
           </div>
           <div className="source-cols">
             <div className="source-col">
               <h3 style={{ color: 'var(--azulejo)' }}>Portugal</h3>
               <div className="pills">
                 <a href="https://www.cncs.gov.pt/" target="_blank" rel="noopener noreferrer">CNCS</a>
-                <a href="https://news.google.com/" target="_blank" rel="noopener noreferrer">Google News PT</a>
+                <a href="https://gnews.io/" target="_blank" rel="noopener noreferrer">GNews (pt-PT)</a>
               </div>
             </div>
             <div className="source-col">
               <h3 style={{ color: 'var(--gold)' }}>União Europeia</h3>
               <div className="pills">
-                <a href="https://news.google.com/" target="_blank" rel="noopener noreferrer">Notícias NIS2/DORA</a>
-                <a href="https://www.darkreading.com/" target="_blank" rel="noopener noreferrer">Dark Reading</a>
+                <a href="https://gnews.io/" target="_blank" rel="noopener noreferrer">GNews (NIS2/DORA)</a>
+                <a href="https://therecord.media/" target="_blank" rel="noopener noreferrer">The Record</a>
               </div>
             </div>
             <div className="source-col">
@@ -180,6 +180,7 @@ export default function App() {
               <div className="pills">
                 <a href="https://thehackernews.com/" target="_blank" rel="noopener noreferrer">The Hacker News</a>
                 <a href="https://www.bleepingcomputer.com/" target="_blank" rel="noopener noreferrer">BleepingComputer</a>
+                <a href="https://www.securityweek.com/" target="_blank" rel="noopener noreferrer">SecurityWeek</a>
               </div>
             </div>
           </div>
@@ -187,9 +188,9 @@ export default function App() {
       </main>
 
       <footer>
-        Sinal — Digest diário de cibersegurança<br/>
+        Cybernews — Digest diário de cibersegurança<br/>
         <span style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '8px', display: 'block' }}>
-          Os artigos e inteligência apresentados provêm de feeds RSS públicos. Nota: O feed do CNCS é monitorizado via alertas do Google News devido a bloqueios de segurança (WAF) no site original.
+          Notícias de Portugal e da UE via GNews (pesquisa dedicada por país e tema); panorama global via feeds RSS de fontes de referência. Consulte sempre a fonte original para o artigo completo.
         </span>
       </footer>
     </>
