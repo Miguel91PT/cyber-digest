@@ -10,12 +10,17 @@ export function ThreatBriefing({ articles }: { articles: Article[] }) {
 
   const generateBriefing = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (articles.length === 0) return;
     setLoading(true);
     setError(null);
     setIsOpen(true);
     try {
+      // O servidor usa sempre os seus próprios artigos recolhidos (por segurança);
+      // não enviamos nada no corpo. Mantemos o POST à mesma.
       const response = await fetch('/api/briefing', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
       });
       if (!response.ok) throw new Error('Failed to fetch briefing');
       const data = await response.json();
